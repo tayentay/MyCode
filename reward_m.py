@@ -72,11 +72,13 @@ class PreferenceEstimator:
         # Extract information from stats
         # Assuming stats contains information about each UE's transmission
         if not hasattr(sim, 'last_actions') or sim.last_actions is None:
+            # No actions recorded yet, skip update
             return
         
         actions = sim.last_actions  # Shape: [num_ues] with UAV indices
         
         # For each UE, record the experience
+        experiences_added = 0
         for ue_idx in range(self.num_ues):
             if ue_idx >= len(actions):
                 continue
@@ -102,6 +104,7 @@ class PreferenceEstimator:
                 'eff_time': eff_time
             }
             self.replay_buffer.append(experience)
+            experiences_added += 1
             
             # Update feature statistics
             feature_key = self._get_feature_key(features)
@@ -113,6 +116,9 @@ class PreferenceEstimator:
             stat['n_j'] += 1
             stat['C_j'] += feedback
             stat['T_j'] += eff_time
+        
+        if self.step_count % 50 == 0:
+            print(f"[PreferenceEstimator] Step {self.step_count}: Added {experiences_added} experiences, buffer size={len(self.replay_buffer)}")
         
         # Periodically fit the estimator
         if len(self.replay_buffer) >= self.min_buffer_size:
@@ -218,14 +224,17 @@ class PreferenceEstimator:
         Computes: θ_hat = (Σ n_j * s_j * s_j^T + λI)^-1 * Σ n_j * s_j * (C_j / (T_j + ε))
         """
         if len(self.feature_stats) == 0:
+            print("[PreferenceEstimator] No feature stats to fit")
             return
         
         # Build data for each UE
+        fitted_count = 0
         for ue_idx in range(self.num_ues):
             # Collect relevant experiences for this UE
             ue_experiences = [exp for exp in self.replay_buffer if exp['ue_idx'] == ue_idx]
             
             if len(ue_experiences) < 10:  # Need minimum samples
+                print(f"[PreferenceEstimator] UE {ue_idx}: Only {len(ue_experiences)} experiences, need 10+")
                 continue
             
             # Get feature dimension from first experience
@@ -254,6 +263,7 @@ class PreferenceEstimator:
                 T_j = data['T']
                 
                 # Effective choice rate with clipping
+                # This represents reliability/latency: high positive = good, negative = bad
                 eff_rate = C_j / (T_j + self.epsilon)
                 eff_rate = np.clip(eff_rate, -self.target_clip, self.target_clip)
                 
@@ -261,20 +271,29 @@ class PreferenceEstimator:
                 A += n_j * np.outer(s_j, s_j)
                 b += n_j * s_j * eff_rate
             
-            # Add regularization
-            A += self.lambda_reg * np.eye(feature_dim)
+            # Add regularization (scaled for numerical stability)
+            reg_scale = np.trace(A) / feature_dim if np.trace(A) > 0 else 1.0
+            A += self.lambda_reg * reg_scale * np.eye(feature_dim)
             
             # Solve for theta_hat
             try:
                 theta = np.linalg.solve(A, b)
                 self.theta_hat[ue_idx] = theta
+                fitted_count += 1
+                print(f"[PreferenceEstimator] UE {ue_idx}: Fitted θ with {len(ue_experiences)} experiences")
+                print(f"  θ norm: {np.linalg.norm(theta):.4f}, features: {len(feature_data)}")
             except np.linalg.LinAlgError:
-                print(f"[PreferenceEstimator] Singular matrix for UE {ue_idx}, using pseudo-inverse")
-                theta = np.linalg.lstsq(A, b, rcond=None)[0]
-                self.theta_hat[ue_idx] = theta
+                print(f"[PreferenceEstimator] UE {ue_idx}: Singular matrix, using pseudo-inverse")
+                try:
+                    theta = np.linalg.lstsq(A, b, rcond=None)[0]
+                    self.theta_hat[ue_idx] = theta
+                    fitted_count += 1
+                except Exception as e:
+                    print(f"[PreferenceEstimator] UE {ue_idx}: Failed to fit - {e}")
         
-        self.is_fitted = True
-        print(f"[PreferenceEstimator] Fitted estimator with {len(self.replay_buffer)} experiences")
+        if fitted_count > 0:
+            self.is_fitted = True
+            print(f"[PreferenceEstimator] Fitted estimator for {fitted_count}/{self.num_ues} UEs with {len(self.replay_buffer)} experiences")
     
     def get_action(self, sim):
         """
@@ -293,20 +312,37 @@ class PreferenceEstimator:
             
             # Use preference scores if available
             if self.theta_hat[ue_idx] is None:
-                actions[ue_idx] = np.random.randint(0, self.num_uavs)
+                # Fallback: select closest UAV
+                if hasattr(sim, 'ue_positions') and hasattr(sim, 'uav_positions'):
+                    ue_pos = sim.ue_positions[ue_idx]
+                    distances = [np.linalg.norm(sim.uav_positions[i] - ue_pos) for i in range(self.num_uavs)]
+                    actions[ue_idx] = np.argmin(distances)
+                else:
+                    actions[ue_idx] = np.random.randint(0, self.num_uavs)
                 continue
             
             # Compute preference scores for all UAVs
             scores = []
+            valid_features = []
             for uav_idx in range(self.num_uavs):
                 features = self._extract_features(ue_idx, uav_idx, sim)
                 if features is None:
                     scores.append(-1e9)
+                    valid_features.append(False)
                 else:
                     score = np.dot(features, self.theta_hat[ue_idx])
                     scores.append(score)
+                    valid_features.append(True)
             
             # Select UAV with highest score
-            actions[ue_idx] = np.argmax(scores)
+            if any(valid_features):
+                actions[ue_idx] = np.argmax(scores)
+            else:
+                # All features invalid, fallback to random
+                actions[ue_idx] = np.random.randint(0, self.num_uavs)
+        
+        # Debug output (print occasionally)
+        if self.step_count % 100 == 0:
+            print(f"[PreferenceEstimator] Step {self.step_count}: Actions={actions}, fitted={[self.theta_hat[i] is not None for i in range(self.num_ues)]}")
         
         return actions
