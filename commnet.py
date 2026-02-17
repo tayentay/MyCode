@@ -207,6 +207,7 @@ class UAVNetworkSimulation:
         self.G2A_rates = np.zeros(self.num_ues, dtype=np.float32)
         self.A2S_rates = np.zeros(self.num_uavs, dtype=np.float32)
         self.G2A_gain = np.empty((self.num_uavs, self.num_ues), dtype=np.float32)  # 信道增益矩阵 
+        self.G2A_SNR_dB = np.zeros((self.num_uavs, self.num_ues), dtype=np.float32)  # SNR matrix in dB
         self.assignment = np.zeros((self.num_uavs, self.num_ues), dtype=bool) 
         self.ue_uav_devices = [[None for _ in range(self.num_uavs)] for _ in range(self.num_ues)]
         self.ue_uav_interfaces = [[None for _ in range(self.num_uavs)] for _ in range(self.num_ues)]
@@ -251,6 +252,7 @@ class UAVNetworkSimulation:
 
         # Stats tracking for RewardM
         self.last_flow_stats = {} # flow_id -> (tx, rx, lost, delay_sum)
+        self.last_actions = None  # Track last actions for preference estimator
 
     def get_last_interval_stats(self):
         """
@@ -726,6 +728,15 @@ class UAVNetworkSimulation:
         current_time = ns.Simulator.Now().GetSeconds()
         time_slot = int(current_time / self.config.time_slot_duration)
         self.G2A_gain = self.G2A_channel.estimate_chan_gain(self.ue_positions, self.uav_positions)
+        
+        # Compute SNR matrix
+        noise_power = self.config.N * self.config.G2A_bandwidth
+        for i in range(self.num_uavs):
+            for j in range(self.num_ues):
+                received_power = self.config.tx_power * self.G2A_gain[i, j]
+                snr_linear = received_power / noise_power if noise_power > 0 else 0
+                self.G2A_SNR_dB[i, j] = 10 * np.log10(snr_linear + 1e-10)
+        
         self.G2A_rates = self.G2A_scheduler.get_rates(self.ue_positions, self.uav_positions, 
                                               self.assignment, self.G2A_gain, time_slot, self.config.tx_power)
         self.G2A_sum_rates += self.G2A_rates
@@ -1088,6 +1099,9 @@ class UAVNetworkSimulation:
     
     def do_scheduling_action(self, action):
         """执行调度"""
+        # Store last actions for preference estimator
+        self.last_actions = action.flatten() if hasattr(action, 'flatten') else action
+        
         # self.assignment = np.zeros((self.num_uavs, self.num_ues), dtype=bool)
         # self.assignment[action, np.arange(self.num_ues)] = True
         self.assignment = np.zeros((self.num_uavs, self.num_ues), dtype=bool)
