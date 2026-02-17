@@ -42,13 +42,13 @@ class Config:
 
     # Preference Estimation Algorithm
     enable_preference_algo: bool = True
-    preference_warmup_steps: int = 500  # Number of steps to train estimator before using it for decisions
+    preference_warmup_steps: int = 200  # Number of steps to train estimator before using it for decisions (reduced from 500)
     preference_lambda: float = 0.99
     preference_epsilon: float = 1e-2
     preference_buffer_capacity: int = 20000
-    preference_min_buffer_size: int = 2000
-    preference_fit_interval_steps: int = 100
-    preference_explore_eps: float = 0.05
+    preference_min_buffer_size: int = 500  # Reduced from 2000 for faster testing
+    preference_fit_interval_steps: int = 50  # Fit more frequently (was 100)
+    preference_explore_eps: float = 0.1  # Increased exploration (was 0.05)
     preference_target_clip: float = 20.0
     preference_min_rtt: float = 1e-4
 
