@@ -729,13 +729,10 @@ class UAVNetworkSimulation:
         time_slot = int(current_time / self.config.time_slot_duration)
         self.G2A_gain = self.G2A_channel.estimate_chan_gain(self.ue_positions, self.uav_positions)
         
-        # Compute SNR matrix
+        # Compute SNR matrix (vectorized for better performance)
         noise_power = self.config.N * self.config.G2A_bandwidth
-        for i in range(self.num_uavs):
-            for j in range(self.num_ues):
-                received_power = self.config.tx_power * self.G2A_gain[i, j]
-                snr_linear = received_power / noise_power if noise_power > 0 else 0
-                self.G2A_SNR_dB[i, j] = 10 * np.log10(snr_linear + 1e-10)
+        snr_linear = (self.config.tx_power * self.G2A_gain) / noise_power if noise_power > 0 else self.G2A_gain
+        self.G2A_SNR_dB = 10 * np.log10(snr_linear + 1e-10)
         
         self.G2A_rates = self.G2A_scheduler.get_rates(self.ue_positions, self.uav_positions, 
                                               self.assignment, self.G2A_gain, time_slot, self.config.tx_power)

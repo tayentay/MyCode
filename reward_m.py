@@ -149,15 +149,25 @@ class PreferenceEstimator:
             
             # Get SNR or signal strength from G2A_rates or SNR matrix
             if hasattr(sim, 'G2A_SNR_dB') and sim.G2A_SNR_dB is not None:
-                snr_db = sim.G2A_SNR_dB[ue_idx, uav_idx] if len(sim.G2A_SNR_dB.shape) > 1 else 0.0
+                # Note: G2A_SNR_dB has shape (num_uavs, num_ues)
+                snr_db = sim.G2A_SNR_dB[uav_idx, ue_idx] if len(sim.G2A_SNR_dB.shape) > 1 else 0.0
             else:
                 snr_db = 20.0  # Default reasonable SNR
             
-            # Get rate
-            if hasattr(sim, 'G2A_rates') and sim.G2A_rates is not None:
-                rate = sim.G2A_rates[ue_idx] / 1e6 if ue_idx < len(sim.G2A_rates) else 0.0  # Mbps
+            # Compute rate for this specific UE-UAV pair
+            if hasattr(sim, 'G2A_gain') and sim.G2A_gain is not None:
+                # Calculate rate based on channel gain for this specific link
+                noise_power = self.config.N * self.config.G2A_bandwidth
+                gain = sim.G2A_gain[uav_idx, ue_idx]
+                received_power = self.config.tx_power * gain
+                snr_linear = received_power / noise_power if noise_power > 0 else 0
+                efficiency = 0.8  # Practical efficiency
+                rate = efficiency * self.config.G2A_bandwidth * np.log2(1 + snr_linear) / 1e6  # Mbps
+            elif hasattr(sim, 'G2A_rates') and sim.G2A_rates is not None and ue_idx < len(sim.G2A_rates):
+                # Fallback: use current assigned rate (less accurate for non-assigned pairs)
+                rate = sim.G2A_rates[ue_idx] / 1e6  # Mbps
             else:
-                rate = 1.0
+                rate = 1.0  # Default
             
             # Normalized distance (assume max area size)
             max_distance = self.config.area_size * 1.5
